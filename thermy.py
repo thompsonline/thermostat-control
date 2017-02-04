@@ -17,6 +17,9 @@ import RPi.GPIO as GPIO
 from time import sleep  # this lets us have a time delay (see line 12)  
 from distutils.fancy_getopt import fancy_getopt
 
+ON = GPIO.LOW
+OFF = GPIO.HIGH
+
 dname = os.path.dirname(os.path.abspath(__file__))
 
 # read values from the config file
@@ -78,10 +81,10 @@ DAEMON_STOPPING = 2
 CHECK_FREQUENCY = int(config.get('main', 'SENSOR_CHECK_FREQUENCY'))  # seconds between checking temp
 
 class HVACState():
-    fan = False
-    heat = False
-    cool = False
-    aux = False
+    fan = OFF
+    heat = OFF
+    cool = OFF
+    aux = OFF
     
     def __init__(self, fan, heat, cool, aux):
         self.fan = fan
@@ -90,7 +93,7 @@ class HVACState():
         self.aux = aux
     
     def show(self):
-        return 'fan %d, heat %d, cool %d, aux %d' % (self.fan, self.heat, self.cool, self.aux)
+        return 'fan %s, heat %s, cool %s, aux %s' % ('ON' if self.fan == ON else 'OFF', 'ON' if self.heat == ON else 'OFF', 'ON' if self.cool == ON else 'OFF', 'ON' if self.aux == ON else 'OFF')
     
 class thermDaemon():
     _daemonStatus = DAEMON_STOPPED
@@ -184,40 +187,40 @@ class thermDaemon():
         
         return result
     
-    def setHVAC(self, orange=0, yellow=0, green=0, aux=0):
-        logger.debug('before setting: heat %d, cool %d, fan %d, aux %d' % (GPIO.input(ORANGE_PIN), GPIO.input(YELLOW_PIN), GPIO.input(GREEN_PIN), GPIO.input(AUX_PIN)))
+    def setHVAC(self, orange=OFF, yellow=OFF, green=OFF, aux=OFF):
+        logger.debug('before setting: heat %s, cool %s, fan %s, aux %s' % ('ON' if GPIO.input(ORANGE_PIN)==ON else 'OFF', 'ON' if GPIO.input(YELLOW_PIN)==ON else 'OFF', 'ON' if GPIO.input(GREEN_PIN)==ON else 'OFF', 'ON' if GPIO.input(AUX_PIN)==ON else 'OFF'))
         
         GPIO.output(ORANGE_PIN, orange)
         GPIO.output(YELLOW_PIN, yellow)
         GPIO.output(GREEN_PIN, green)
         GPIO.output(AUX_PIN, aux)
-        logger.debug('after setting: heat %d, cool %d, fan %d, aux %d' % (GPIO.input(ORANGE_PIN), GPIO.input(YELLOW_PIN), GPIO.input(GREEN_PIN), GPIO.input(AUX_PIN)))
+        logger.debug('after setting: heat %s, cool %s, fan %s, aux %s' % ('ON' if GPIO.input(ORANGE_PIN)==ON else 'OFF', 'ON' if GPIO.input(YELLOW_PIN)==ON else 'OFF', 'ON' if GPIO.input(GREEN_PIN)==ON else 'OFF', 'ON' if GPIO.input(AUX_PIN)==ON else 'OFF'))
         
     def getHVACState(self):
-        return HVACState(GPIO.input(GREEN_PIN)==1, GPIO.input(ORANGE_PIN)==1, GPIO.input(YELLOW_PIN)==1, GPIO.input(AUX_PIN)==1)
+        return HVACState(GPIO.input(GREEN_PIN), GPIO.input(ORANGE_PIN), GPIO.input(YELLOW_PIN), GPIO.input(AUX_PIN))
         
     def fanOnly(self):
         #Turn the fan on
-        self.setHVAC(0, 0, 1, 0)
+        self.setHVAC(OFF, OFF, ON, OFF)
     
     def cool(self):
         #Set cooling mode
-        self.setHVAC(0, 1, 1, 0)
+        self.setHVAC(OFF, ON, ON, OFF)
         
     def heat(self):
-        self.setHVAC(1, 0, 1, 0)
+        self.setHVAC(ON, OFF, ON, OFF)
             
     def idle(self):
-        self.setHVAC(0, 0, 0, 0)        
+        self.setHVAC(OFF, OFF, OFF, OFF)        
 
     def heatMode(self, moduleID, tempList, hvacState, targetTemp):
         logger.debug('Heat mode')
-        if not hvacState.fan and not hvacState.heat and not hvacState.cool and not hvacState.aux: # system is idle/off
+        if hvacState.fan==OFF and hvacState.heat==OFF and hvacState.cool==OFF and hvacState.aux==OFF: # system is idle/off
             logger.debug('system is off')
             if tempList[moduleID-1] < targetTemp - INACTIVE_HYSTERESIS: #temp < target = turn on heat
                 logger.debug('turning on heat')
                 self.heat()
-        elif hvacState.fan and hvacState.heat: #system is heating
+        elif hvacState.fan==ON and hvacState.heat==ON: #system is heating
             logger.debug('system is heating')
             if tempList[moduleID-1] > targetTemp + ACTIVE_HYSTERESIS: #temp has been satisfied
                 logger.debug('turning off heat. going to fan mode')
@@ -226,7 +229,7 @@ class thermDaemon():
                 sleep(30)
                 #go to idle mode
                 logger.debug('finishing turning the heat off. turning fan off.')
-        elif hvacState.fan and hvacState.cool: #system is cooling
+        elif hvacState.fan==ON and hvacState.cool==ON: #system is cooling
             logger.debug('system is cooling')
             if tempList[moduleID-1] < targetTemp - ACTIVE_HYSTERESIS: #temp is low so change from cooling to heat
                 #go to idle mode
@@ -240,7 +243,7 @@ class thermDaemon():
                 #go to idle mode
                 logger.debug('temp is satisfied. turning system off')
                 self.idle()
-        elif hvacState.fan and not hvacState.cool and not hvacState.heat: #fan-only mode
+        elif hvacState.fan==ON and hvacState.cool==OFF and hvacState.heat==OFF: #fan-only mode
             logger.debug('fan only mode')
             if tempList[moduleID-1] < targetTemp - INACTIVE_HYSTERESIS: #temp is low so turn heat on
                 logger.debug('turning heat on')
@@ -248,25 +251,25 @@ class thermDaemon():
             else:
                 logger.debug('turning fan off')
                 self.idle()
-        elif not hvacState.fan and (hvacState.cool or hvacState.heat): #no fan but heating or cooling - error
+        elif hvacState.fan==OFF and (hvacState.cool==ON or hvacState.heat==ON): #no fan but heating or cooling - error
             logger.debug('fan not running when it should')
             #turn off
             self.idle()
         
     def coolMode(self, moduleID, tempList, hvacState, targetTemp):
         logger.debug('Cool mode')
-        if not hvacState.fan and not hvacState.heat and not hvacState.cool and not hvacState.aux: # system is idle/off
+        if hvacState.fan==OFF and hvacState.heat==OFF and  hvacState.cool==OFF and hvacState.aux==OFF: # system is idle/off
             logger.debug('system is off')
             if tempList[moduleID-1] > targetTemp + INACTIVE_HYSTERESIS: #temp > target = turn on a/c
                 logger.debug('turning on a/c')
                 self.cool()
-        elif hvacState.fan and hvacState.heat: #system is heating
+        elif hvacState.fan==ON and hvacState.heat==ON: #system is heating
             logger.debug('system is heating')
             if tempList[moduleID-1] > targetTemp + ACTIVE_HYSTERESIS: #temp > target = turn on a/c
                 logger.debug('finishing turning the heat off. turning cool on')
                 #go to cool mode
                 self.cool()
-        elif hvacState.fan and hvacState.cool: #system is cooling
+        elif hvacState.fan==ON and hvacState.cool==ON: #system is cooling
             logger.debug('system is cooling')
             if tempList[moduleID-1] < targetTemp - ACTIVE_HYSTERESIS: #temp is satisfied so turn off a/c
                 logger.debug('turning off cool. running fan-only first.')
@@ -275,7 +278,7 @@ class thermDaemon():
                 #go to idle mode
                 logger.debug('finishing. turning off fan')
                 self.idle()
-        elif hvacState.fan and not hvacState.cool and not hvacState.heat: #fan-only mode
+        elif hvacState.fan==ON and hvacState.cool==OFF and hvacState.heat==OFF: #fan-only mode
             logger.debug('fan only mode')
             if tempList[moduleID-1] > targetTemp + INACTIVE_HYSTERESIS: #temp is high so turn a/c
                 logger.debug('turning cool on')
@@ -283,7 +286,7 @@ class thermDaemon():
             else:
                 logger.debug('turning fan off')
                 self.idle()
-        elif not hvacState.fan and (hvacState.cool or hvacState.heat): #no fan but heating or cooling - error
+        elif hvacState.fan==OFF and (hvacState.cool==ON or hvacState.heat==ON): #no fan but heating or cooling - error
             logger.debug('fan not running when it should')
             #turn off
             self.idle()

@@ -11,7 +11,7 @@
 ### END INIT INFO
 
 # Change the next 3 lines to suit where you install your script and what you want to call it
-DIR='/home/john/thermostat-control'
+DIR='/home/john/thermy/thermostat-control'
 DAEMON=$DIR/thermy.py
 DAEMON_NAME='thermy'
 

@@ -111,7 +111,7 @@ class thermDaemon():
         conDB = mdb.connect(CONN_PARAMS[0], CONN_PARAMS[1], CONN_PARAMS[2], CONN_PARAMS[3], port=CONN_PARAMS[4])
         cursor = conDB.cursor()
         
-        cursor.execute("SELECT * from ThermostatSet")
+        cursor.execute("SELECT timeStamp, moduleID, targetTemp, targetMode, expiryTime, entryNo from ThermostatSet")
         
         targs = cursor.fetchall()[0]
         
@@ -142,10 +142,11 @@ class thermDaemon():
         allModTemps = []
         for modID in range(totSensors):
             try:
-                queryStr = ("SELECT * FROM SensorData WHERE moduleID=%s ORDER BY readingID DESC LIMIT 1" % str(modID + 1))
+                queryStr = ("SELECT readingID, timeStamp, moduleID, location, temperature, humidity, light, occupied FROM SensorData WHERE moduleID=%s ORDER BY readingID DESC LIMIT 1" % str(modID + 1))
                 cursor.execute(queryStr)
                 allModTemps.append(float(cursor.fetchall()[0][4]))
             except:
+                logger.debug("Error reading temperature database")
                 pass
 
         cursor.close()
@@ -365,7 +366,6 @@ class thermDaemon():
                 
                 moduleID = int(moduleID)
                 targetTemp = int(targetTemp)
-                tempList = self.getTempList()
                
                 #Depending on the mode, HVAC state, and the difference between the desired temp and current temp, turn HVAC on or off
                 logger.debug('Operating mode is %s' % targetMode)

@@ -232,19 +232,23 @@ class thermDaemon():
           return HVACState(GPIO.input(GREEN_PIN), GPIO.input(ORANGE_PIN), GPIO.input(YELLOW_PIN), GPIO.input(AUX_PIN))
         else:
 				  logger.debug("Getting state")
+				  state = None
 				  try:
 				    conn = httplib.HTTPConnection(REMOTE_RELAY_URL, 80, timeout=15)
-				    conn.request("GET", "/all=state?key=%s" % (REMOTE_RELAY_KEY))
-				    res = conn.getresponse()
-				    state = res.read()
+				    if (conn != None):
+				      conn.request("GET", "/all=state?key=%s" % (REMOTE_RELAY_KEY))
+				      res = conn.getresponse()
+				      state = res.read()
 				  
-				    logger.debug(state)
+				      logger.debug(state)
 				  except httplib.HTTPException:
-				    logger.debug("HTTPException")
+				    logger.debug("Getting HVAC State: HTTPException")
 				  except httplib.ImproperConnectionState:
-				    logger.debug("ImproperConnectionState")
+				    logger.debug("Getting HVAC State: ImproperConnectionState")
+				  except Exception:
+				    logger.debug("Getting HVAC State: General exception")
 				    
-				  if state != "":
+				  if state != None and state != "":
 				    states = state.split(',')
 				    logger.debug(states)
 				  else:

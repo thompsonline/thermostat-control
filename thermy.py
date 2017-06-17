@@ -12,6 +12,7 @@ from signal import SIGTERM
 import MySQLdb as mdb
 import dht11
 import datetime
+import httplib
 
 import RPi.GPIO as GPIO  
 from time import sleep  # this lets us have a time delay (see line 12)  
@@ -67,6 +68,14 @@ YELLOW_PIN = int(config.get('main', 'YELLOW_PIN'))
 GREEN_PIN = int(config.get('main', 'GREEN_PIN'))
 AUX_PIN = int(config.get('main', 'AUX_PIN'))
 AUX_ID = int(config.get('main', 'AUX_ID'))
+
+RELAY_CONNECTION = config.get('main', 'RELAY_CONNECTION')
+REMOTE_RELAY_URL = config.get('main', 'REMOTE_RELAY_URL')
+REMOTE_RELAY_KEY = config.get('main', 'REMOTE_RELAY_KEY')
+ORANGE_UNC = config.get('main', 'ORANGE_UNC')
+YELLOW_UNC = config.get('main', 'YELLOW_UNC')
+GREEN_UNC = config.get('main', 'GREEN_UNC')
+AUX_UNC = config.get('main', 'AUX_UNC')
 
 INDOOR_SENSOR_PIN = int(config.get('main', 'INDOOR_SENSOR_PIN'))
 SENSOR_RETRY_MAX = 5
@@ -188,17 +197,66 @@ class thermDaemon():
         return result
     
     def setHVAC(self, orange=OFF, yellow=OFF, green=OFF, aux=OFF):
-        logger.debug('before setting: heat %s, cool %s, fan %s, aux %s' % ('ON' if GPIO.input(ORANGE_PIN)==ON else 'OFF', 'ON' if GPIO.input(YELLOW_PIN)==ON else 'OFF', 'ON' if GPIO.input(GREEN_PIN)==ON else 'OFF', 'ON' if GPIO.input(AUX_PIN)==ON else 'OFF'))
-        
-        GPIO.output(ORANGE_PIN, orange)
-        GPIO.output(YELLOW_PIN, yellow)
-        GPIO.output(GREEN_PIN, green)
-        GPIO.output(AUX_PIN, aux)
-        logger.debug('after setting: heat %s, cool %s, fan %s, aux %s' % ('ON' if GPIO.input(ORANGE_PIN)==ON else 'OFF', 'ON' if GPIO.input(YELLOW_PIN)==ON else 'OFF', 'ON' if GPIO.input(GREEN_PIN)==ON else 'OFF', 'ON' if GPIO.input(AUX_PIN)==ON else 'OFF'))
-        
+        if (RELAY_CONNECTION == 'DIRECT'):
+						logger.debug('before setting: heat %s, cool %s, fan %s, aux %s' % ('ON' if GPIO.input(ORANGE_PIN)==ON else 'OFF', 'ON' if GPIO.input(YELLOW_PIN)==ON else 'OFF', 'ON' if GPIO.input(GREEN_PIN)==ON else 'OFF', 'ON' if GPIO.input(AUX_PIN)==ON else 'OFF'))
+				
+						GPIO.output(ORANGE_PIN, orange)
+						GPIO.output(YELLOW_PIN, yellow)
+						GPIO.output(GREEN_PIN, green)
+						GPIO.output(AUX_PIN, aux)
+						logger.debug('after setting: heat %s, cool %s, fan %s, aux %s' % ('ON' if GPIO.input(ORANGE_PIN)==ON else 'OFF', 'ON' if GPIO.input(YELLOW_PIN)==ON else 'OFF', 'ON' if GPIO.input(GREEN_PIN)==ON else 'OFF', 'ON' if GPIO.input(AUX_PIN)==ON else 'OFF'))
+        else:
+				  conn = httplib.HTTPConnection(REMOTE_RELAY_URL);
+				  conn.request("GET", "%s=%s?key=%s" % (ORANGE_UNC, ("off" if orange == OFF else "on"), REMOTE_RELAY_KEY))
+				  res = conn.getresponse()
+				  resdata = res.read()
+				  logger.debug("setting orange: %s" % resdata)
+
+				  conn.request("GET", "%s=%s?key=%s" % (YELLOW_UNC, ("off" if yellow == OFF else "on"), REMOTE_RELAY_KEY))
+				  res = conn.getresponse()
+				  resdata = res.read()
+				  logger.debug("setting yellow: %s" % resdata)
+				  
+				  conn.request("GET", "%s=%s?key=%s" % (GREEN_UNC, ("off" if green == OFF else "on"), REMOTE_RELAY_KEY))
+				  res = conn.getresponse()
+				  resdata = res.read()
+				  logger.debug("setting green: %s" % resdata)
+
+				  conn.request("GET", "%s=%s?key=%s" % (AUX_UNC, ("off" if aux == OFF else "on"), REMOTE_RELAY_KEY))
+				  res = conn.getresponse()
+				  resdata = res.read()
+				  logger.debug("setting aux: %s" % resdata)
+				          
     def getHVACState(self):
-        return HVACState(GPIO.input(GREEN_PIN), GPIO.input(ORANGE_PIN), GPIO.input(YELLOW_PIN), GPIO.input(AUX_PIN))
-        
+        if (RELAY_CONNECTION == 'DIRECT'):
+          return HVACState(GPIO.input(GREEN_PIN), GPIO.input(ORANGE_PIN), GPIO.input(YELLOW_PIN), GPIO.input(AUX_PIN))
+        else:
+				  logger.debug("Getting state")
+				  try:
+				    conn = httplib.HTTPConnection(REMOTE_RELAY_URL, 80, timeout=15)
+				    conn.request("GET", "/all=state?key=%s" % (REMOTE_RELAY_KEY))
+				    res = conn.getresponse()
+				    state = res.read()
+				  
+				    logger.debug(state)
+				  except httplib.HTTPException:
+				    logger.debug("HTTPException")
+				  except httplib.ImproperConnectionState:
+				    logger.debug("ImproperConnectionState")
+				    
+				  if state != "":
+				    states = state.split(',')
+				    logger.debug(states)
+				  else:
+				    states = ["ON","ON","ON","ON"]
+				    
+				  #response is in order: Green, Orange, Yellow, Aux
+
+				  return HVACState(OFF if states[0].rstrip() == "OFF" else ON, 
+					       OFF if states[1].rstrip() == "OFF" else ON, 
+					       OFF if states[2].rstrip() == "OFF" else ON, 
+					       OFF if states[3].rstrip() == "OFF" else ON)
+          
     def fanOnly(self):
         #Turn the fan on
         self.setHVAC(OFF, OFF, ON, OFF)
@@ -300,13 +358,14 @@ class thermDaemon():
         self.fanOnly()
         
     def configIO(self):
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)  # set up BCM GPIO numbering
-        
-        GPIO.setup(ORANGE_PIN, GPIO.OUT)
-        GPIO.setup(YELLOW_PIN, GPIO.OUT)
-        GPIO.setup(GREEN_PIN, GPIO.OUT)
-        GPIO.setup(AUX_PIN, GPIO.OUT)
+        if (RELAY_CONNECTION == 'DIRECT'):
+					GPIO.setwarnings(False)
+					GPIO.setmode(GPIO.BCM)  # set up BCM GPIO numbering
+				
+					GPIO.setup(ORANGE_PIN, GPIO.OUT)
+					GPIO.setup(YELLOW_PIN, GPIO.OUT)
+					GPIO.setup(GREEN_PIN, GPIO.OUT)
+					GPIO.setup(AUX_PIN, GPIO.OUT)
     
     def testDatabaseConnection(self):
         retry  = 30
@@ -365,8 +424,8 @@ class thermDaemon():
                 logger.debug('Pin Value State:' + hvacState.show())
                 logger.debug('Target Mode:' + targetMode)
                 logger.debug('Actual Mode:' + activeMode)
-                logger.debug( 'Temp from DB:'+str(tempList))
-                logger.debug( 'Target Temp:'+str(targetTemp))
+                logger.debug('Temp from DB:'+str(tempList))
+                logger.debug('Target Temp:'+str(targetTemp))
 
                 logger.debug('Target Mode: %s' % targetMode)
                 if targetMode == 'Heat':
@@ -400,7 +459,8 @@ class thermDaemon():
             logger.info('Keyboard interrupt')
         finally:
             self.idle()
-            GPIO.cleanup()
+            if (RELAY_CONNECTION == 'DIRECT'):
+              GPIO.cleanup()
             self._daemonStatus = DAEMON_STOPPED
         
 def sigterm_handler(_signo, _stack_frame):
@@ -408,7 +468,8 @@ def sigterm_handler(_signo, _stack_frame):
     logger.info("Received signal {}, exiting...".format(_signo))
     print("Received signal {}, exiting...".format(_signo))
     logger.info("Stopping Daemon due to signal")
-    GPIO.cleanup()
+    if (RELAY_CONNECTION == 'DIRECT'):
+      GPIO.cleanup()
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, sigterm_handler)

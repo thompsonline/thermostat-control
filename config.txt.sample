@@ -19,6 +19,12 @@ logcount = 3
 active_hysteresis = 1
 inactive_hysteresis = 2
 
+#RELAY_CONNECTION = [REMOTE|DIRECT]
+#  Remote is an internet connected relay manager
+#  Direct is where the relays are directly connected to the thermostat
+
+RELAY_CONNECTION = REMOTE
+
 # Orange=Heat, Yellow=Compressor, Green=Fan, Aux=Auxiliary Control
 # Fan Only=Green +24V
 # Cooling=Green, Yellow +24V
@@ -30,6 +36,13 @@ YELLOW_PIN = 20
 GREEN_PIN = 21
 AUX_PIN = 12
 
+REMOTE_RELAY_URL = 192.168.1.105
+REMOTE_RELAY_KEY = 123
+ORANGE_UNC = /orange
+YELLOW_UNC = /yellow
+GREEN_UNC = /green
+AUX_UNC = /aux
+
 INDOOR_SENSOR_PIN = 19
 #Number of seconds to wait between checking the sensor temp
 SENSOR_CHECK_FREQUENCY = 10
@@ -40,8 +53,8 @@ SENSOR_CHECK_FREQUENCY = 10
 # the same place as your original thermostat.
 AUX_ID = 1
 
-mysqlUser = <mysql user id>
-mysqlPass = <mysql password>
-mysqlDatabase = Thermostat
+mysqlUser = <user>
+mysqlPass = <pass>
+mysqlDatabase = thermostat
 mysqlHost = localhost
 mysqlPort = 3306

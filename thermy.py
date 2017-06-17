@@ -153,49 +153,6 @@ class thermDaemon():
 
         return allModTemps
 
-    def getLocalTemp(self, sendToDB=False):
-        result =  False
-        temp_f = 0.0
-        humid = 0.0
-        
-        try:
-            sensor = dht11.DHT11(pin=INDOOR_SENSOR_PIN)
-            sensorResult = sensor.read()
-            retryCount = SENSOR_RETRY_MAX
-            while retryCount > 0 and not sensorResult.is_valid():
-                retryCount = retryCount - 1
-                time.sleep(1)
-                sensorResult = sensor.read()
-                
-            if sensorResult.is_valid():
-                temp_f = sensorResult.temperature * 9.0 / 5.0 + 32.0
-                humid = sensorResult.humidity * 1.0
-                logger.debug("Temperature: %f C" % sensorResult.temperature)
-                logger.debug("Humidity: %3.2f %%" % sensorResult.humidity)
-        
-                conDB = mdb.connect(CONN_PARAMS[0],CONN_PARAMS[1],CONN_PARAMS[2],CONN_PARAMS[3],port=CONN_PARAMS[4])
-                cursor = conDB.cursor()
-        
-                query = "INSERT into SensorData (moduleID, location, temperature, humidity) VALUES (1, 'Local', %4.1f, %3.2f)" % (temp_f, humid)
-                logger.debug(query)
-                cursor.execute(query)
-                
-                cursor.close()
-                conDB.commit()
-                conDB.close()
-                result = True
-        except Exception, err:
-            logger.debug(err)
-
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-            logger.error('1Error occurred at %s' % (datetime.datetime.now().strftime('%m-%d-%y-%X')))
-            logger.error(str(exc_type.__name__))
-            logger.error(str(fname))
-            logger.error('Line '+ str(exc_tb.tb_lineno))
-        
-        return result
-    
     def setHVAC(self, orange=OFF, yellow=OFF, green=OFF, aux=OFF):
         if (RELAY_CONNECTION == 'DIRECT'):
 						logger.debug('before setting: heat %s, cool %s, fan %s, aux %s' % ('ON' if GPIO.input(ORANGE_PIN)==ON else 'OFF', 'ON' if GPIO.input(YELLOW_PIN)==ON else 'OFF', 'ON' if GPIO.input(GREEN_PIN)==ON else 'OFF', 'ON' if GPIO.input(AUX_PIN)==ON else 'OFF'))
@@ -396,14 +353,12 @@ class thermDaemon():
         self.testDatabaseConnection() 
 
         try:
-            lastCheck = time.time()  # last time the aux temp was checked
             activeMode = 'Off'
         
             self.configIO()
                 
             while self._daemonStatus == DAEMON_RUNNING:
                 now = time.time()
-                lastCheckElapsed = now - lastCheck  # how long since last temp check
                 hvacState = self.getHVACState()
 
                 setTime, moduleID, targetTemp, targetMode, expiryTime = self.getDBTargets()
@@ -412,13 +367,6 @@ class thermDaemon():
                 targetTemp = int(targetTemp)
                 tempList = self.getTempList()
                
-                #Periodically, check the indoor temperature
-                if lastCheckElapsed > CHECK_FREQUENCY:
-                    logger.debug("Getting local temperature")
-                    self.getLocalTemp(True)  # get the indoor temp and save it to the database
-                    self.logStatus(activeMode, moduleID, targetTemp, tempList[moduleID - 1], hvacState)
-                    lastCheck = now
-                
                 #Depending on the mode, HVAC state, and the difference between the desired temp and current temp, turn HVAC on or off
                 logger.debug('Operating mode is %s' % targetMode)
                 

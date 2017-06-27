@@ -13,6 +13,9 @@ import MySQLdb as mdb
 import dht11
 import datetime
 import httplib
+import requests
+import mysql.connector
+from mysql.connector import pooling
 
 import RPi.GPIO as GPIO  
 from time import sleep  # this lets us have a time delay (see line 12)  
@@ -59,9 +62,9 @@ class MyLogger(object):
 sys.stdout = MyLogger(logger, logging.INFO)
 # sys.stderr = MyLogger(logger, logging.ERROR)
 
-CONN_PARAMS = (config.get('main', 'mysqlHost'), config.get('main', 'mysqlUser'),
-               config.get('main', 'mysqlPass'), config.get('main', 'mysqlDatabase'),
-               int(config.get('main', 'mysqlPort')))
+#CONN_PARAMS = (config.get('main', 'mysqlHost'), config.get('main', 'mysqlUser'),
+#               config.get('main', 'mysqlPass'), config.get('main', 'mysqlDatabase'),
+#               int(config.get('main', 'mysqlPort')))
 
 ORANGE_PIN = int(config.get('main', 'ORANGE_PIN'))
 YELLOW_PIN = int(config.get('main', 'YELLOW_PIN'))
@@ -104,55 +107,155 @@ class HVACState():
     def show(self):
         return 'fan %s, heat %s, cool %s, aux %s' % ('ON' if self.fan == ON else 'OFF', 'ON' if self.heat == ON else 'OFF', 'ON' if self.cool == ON else 'OFF', 'ON' if self.aux == ON else 'OFF')
     
+class ThermError(Exception):
+  pass
+class ThermDatabaseError(ThermError):
+  def __init__(self, message):
+    self.message = message
+    
+class ThermDatabase():
+  _dbconfig = None
+  _pool = None
+  _logger = None
+  
+  def __init__(self, logger):
+    self._dbconfig = {
+      "database" : config.get('main', 'mysqlDatabase'),
+      "host" : config.get('main', 'mysqlHost'),
+      "user" : config.get('main', 'mysqlUser'),
+      "password" : config.get('main', 'mysqlPass'), 
+      "port" : int(config.get('main', 'mysqlPort'))	
+    }
+    self._logger = logger
+  
+  def connect(self):
+    result = False
+    if (self._pool == None):
+      try:
+        self._pool = mysql.connector.pooling.MySQLConnectionPool(pool_name="thermy", pool_size=3, **self._dbconfig)
+        result = True
+      except mdb.Error as err:
+        self._logger.error("Database connect failed: %s" % (err))
+      
+    else:
+      self._logger.warning("Database connect failed. Database already connected")
+      result = True
+      
+    return result
+    
+  def getConnection(self):
+    result = None
+    if (self._pool != None):
+      try:
+        result = self._pool.get_connection()
+      except mdb.Error as err:
+        self._logger.error("Database pool allocation t failed: %s" % (err))
+    else:
+      self._logger.error("Unable to get database connection. Connect to database before requesting a pooled connection.")
+    
+    return result
+    
+  def getCursor(self, connection):
+    result = None
+    if (self._pool != None):
+      if (connection != None):
+        try:
+          result = connection.cursor()
+        except mdb.Error as err:
+          self._logger.error("getCursor failed: %s" % (err))
+      else:
+        self._logger.error("Unable to get database connection. Connect to database before requesting a pooled connection.")
+    else:
+      self._logger.error("Unable to get database connection. Connect to database before requesting a pooled connection.")
+      
+    return result    
+      
 class thermDaemon():
     _daemonStatus = DAEMON_STOPPED
+    db = None
+    
+    def __init__(self):
+      self.db = ThermDatabase(logger)
+      self.db.connect()
     
     def getDBTargets(self):
-        conDB = mdb.connect(CONN_PARAMS[0], CONN_PARAMS[1], CONN_PARAMS[2], CONN_PARAMS[3], port=CONN_PARAMS[4])
-        cursor = conDB.cursor()
+        result = [None,None,None,None,None,None]
+        conDB = self.db.getConnection()
+        if (conDB != None):
+          cursor = self.db.getCursor(conDB)
+
+          if (cursor != None):        
+            cursor.execute("SELECT timeStamp, moduleID, targetTemp, targetMode, expiryTime, entryNo from ThermostatSet")
         
-        cursor.execute("SELECT timeStamp, moduleID, targetTemp, targetMode, expiryTime, entryNo from ThermostatSet")
+            targs = cursor.fetchall()[0]
         
-        targs = cursor.fetchall()[0]
-        
-        cursor.close()
-        conDB.close()
-        return targs[:-1]
+            cursor.close()
+            
+            result = targs[:-1]
+            
+          conDB.close()
+        return result
     
     def logStatus(self, mode, moduleID, targetTemp, actualTemp, hvacState):
-        conDB = mdb.connect(CONN_PARAMS[0], CONN_PARAMS[1], CONN_PARAMS[2], CONN_PARAMS[3], port=CONN_PARAMS[4])
-        cursor = conDB.cursor()
+        conDB = self.db.getConnection()
+        if (conDB != None):
+          cursor = self.db.getCursor(conDB)
+          
+          if (cursor != None):
+            cursor.execute("""INSERT ThermostatLog SET mode='%s', moduleID=%s, targetTemp=%s, actualTemp=%s,
+                            coolOn=%s, heatOn=%s, fanOn=%s, auxOn=%s""" % 
+                            (str(mode), str(moduleID), str(targetTemp), str(actualTemp),
+                            str(hvacState.cool), str(hvacState.heat), str(hvacState.fan), str(hvacState.aux)))
 
-        cursor.execute("""INSERT ThermostatLog SET mode='%s', moduleID=%s, targetTemp=%s, actualTemp=%s,
-                        coolOn=%s, heatOn=%s, fanOn=%s, auxOn=%s""" % 
-                        (str(mode), str(moduleID), str(targetTemp), str(actualTemp),
-                        str(hvacState.cool), str(hvacState.heat), str(hvacState.fan), str(hvacState.aux)))
-
-        cursor.close()
-        conDB.commit()
-        conDB.close()
+            cursor.close()
+            conDB.commit()
+          conDB.close()
         
     def getTempList(self):
-        conDB = mdb.connect(CONN_PARAMS[0], CONN_PARAMS[1], CONN_PARAMS[2], CONN_PARAMS[3], port=CONN_PARAMS[4])
-        cursor = conDB.cursor()
+        conDB = self.db.getConnection()
+        if (conDB != None):
+          cursor = self.db.getCursor(conDB)
+          if (cursor != None):
+            cursor.execute("SELECT MAX(moduleID) FROM ModuleInfo")
+            totSensors = int(cursor.fetchall()[0][0])
 
-        cursor.execute("SELECT MAX(moduleID) FROM ModuleInfo")
-        totSensors = int(cursor.fetchall()[0][0])
+            allModTemps = []
+            for modID in range(totSensors):
+                try:
+                    queryStr = ("SELECT readingID, timeStamp, moduleID, location, temperature, humidity, light, occupied FROM SensorData WHERE moduleID=%s ORDER BY readingID DESC LIMIT 1" % str(modID + 1))
+                    cursor.execute(queryStr)
+                    allModTemps.append(float(cursor.fetchall()[0][4]))
+                except:
+                    logger.debug("Error reading temperature database")
+                    pass
 
-        allModTemps = []
-        for modID in range(totSensors):
-            try:
-                queryStr = ("SELECT readingID, timeStamp, moduleID, location, temperature, humidity, light, occupied FROM SensorData WHERE moduleID=%s ORDER BY readingID DESC LIMIT 1" % str(modID + 1))
-                cursor.execute(queryStr)
-                allModTemps.append(float(cursor.fetchall()[0][4]))
-            except:
-                logger.debug("Error reading temperature database")
-                pass
-
-        cursor.close()
-        conDB.close()
+            cursor.close()
+          conDB.close()
 
         return allModTemps
+        
+    def getLastReading(self, moduleID):
+        conDB = self.db.getConnection()
+        if (conDB != None):
+          cursor = self.db.getCursor(conDB)
+          if (cursor != None):
+            cursor.execute("SELECT MAX(timeStamp) FROM SensorData WHERE moduleID=%s" % (moduleID))
+            stamps = cursor.fetchall()
+        
+            cursor.close()
+          conDB.close()
+
+        return stamps[0][0]
+
+    def setDefaultModule(self, moduleID):
+        conDB = self.db.getConnection()
+        if (conDB != None):
+          cursor = self.db.getCursor(conDB)
+          if (cursor != None):
+            cursor.execute("UPDATE ThermostatSet SET moduleID=%d" % (moduleID))
+            conDB.commit()
+          conDB.close()
+        return
 
     def setHVAC(self, orange=OFF, yellow=OFF, green=OFF, aux=OFF):
         if (RELAY_CONNECTION == 'DIRECT'):
@@ -164,49 +267,76 @@ class thermDaemon():
 						GPIO.output(AUX_PIN, aux)
 						logger.debug('after setting: heat %s, cool %s, fan %s, aux %s' % ('ON' if GPIO.input(ORANGE_PIN)==ON else 'OFF', 'ON' if GPIO.input(YELLOW_PIN)==ON else 'OFF', 'ON' if GPIO.input(GREEN_PIN)==ON else 'OFF', 'ON' if GPIO.input(AUX_PIN)==ON else 'OFF'))
         else:
-				  conn = httplib.HTTPConnection(REMOTE_RELAY_URL);
-				  conn.request("GET", "%s=%s?key=%s" % (ORANGE_UNC, ("off" if orange == OFF else "on"), REMOTE_RELAY_KEY))
-				  res = conn.getresponse()
-				  resdata = res.read()
-				  logger.debug("setting orange: %s" % resdata)
-
-				  conn.request("GET", "%s=%s?key=%s" % (YELLOW_UNC, ("off" if yellow == OFF else "on"), REMOTE_RELAY_KEY))
-				  res = conn.getresponse()
-				  resdata = res.read()
-				  logger.debug("setting yellow: %s" % resdata)
-				  
-				  conn.request("GET", "%s=%s?key=%s" % (GREEN_UNC, ("off" if green == OFF else "on"), REMOTE_RELAY_KEY))
-				  res = conn.getresponse()
-				  resdata = res.read()
-				  logger.debug("setting green: %s" % resdata)
-
-				  conn.request("GET", "%s=%s?key=%s" % (AUX_UNC, ("off" if aux == OFF else "on"), REMOTE_RELAY_KEY))
-				  res = conn.getresponse()
-				  resdata = res.read()
-				  logger.debug("setting aux: %s" % resdata)
-				          
+ 				    payload = {'key' : REMOTE_RELAY_KEY, 'ts' : int(round(time.time() * 1000))}
+ 				    url = "HTTP://%s" % (REMOTE_RELAY_URL)
+ 				    try:
+ 				      # build request string
+ 				      command = "/orange=%s/yellow=%s/green=%s/aux=%s" % (("off" if orange == OFF else "on"),("off" if yellow == OFF else "on"),("off" if green == OFF else "on"),("off" if aux == OFF else "on"))
+ 				      r = requests.get("%s%s" % (url, command), timeout=10, params=payload)
+				    except requests.exceptions.ConnectionError as e:
+				      logger.error("Setting relay state: ConnectionError. %s" % e)
+				    except requests.exceptions.HTTPError as e:
+				      logger.error("Setting relay state: HTTPError. %s" % e)
+				    except requests.exceptions.URLRequired as e:
+				      logger.error("Setting relay state: URLRequired. %s" % e)
+				    except requests.exceptions.TooManyRedirects as e:
+				      logger.error("Setting relay state: TooManyRedirects. %s" % e)
+				    except requests.exceptions.ConnectTimeout as e:
+				      logger.error("Setting relay state: ConnectTimeout. %s" % e)
+				    except requests.exceptions.ReadTimeout as e:
+				      logger.error("Setting relay state: ReadTimeout. %s" % e)
+				    except requests.exceptions.Timeout as e:
+				      logger.error("Setting relay state: Timeout. %s" % e)
+				    except requests.exceptions.RequestException as e:
+				      logger.error("Setting relay state: RequestException. %s" % e)
+				   
+    def updateControllerStatus(self):
+        conDB = self.db.getConnection()
+        if (conDB != None):
+          cursor = self.db.getCursor(conDB)
+          if (cursor != None):
+            cursor.execute("INSERT INTO ControllerStatus (id,lastStatus) values (1,NOW()) ON DUPLICATE KEY UPDATE lastStatus = NOW()")
+            cursor.close()
+            conDB.commit()
+          conDB.close()
+		    
     def getHVACState(self):
         if (RELAY_CONNECTION == 'DIRECT'):
           return HVACState(GPIO.input(GREEN_PIN), GPIO.input(ORANGE_PIN), GPIO.input(YELLOW_PIN), GPIO.input(AUX_PIN))
         else:
 				  logger.debug("Getting state")
 				  state = None
+				  r = None
 				  try:
-				    conn = httplib.HTTPConnection(REMOTE_RELAY_URL, 80, timeout=15)
-				    if (conn != None):
-				      conn.request("GET", "/all=state?key=%s" % (REMOTE_RELAY_KEY))
-				      res = conn.getresponse()
-				      state = res.read()
-				  
-				      logger.debug(state)
-				  except httplib.HTTPException:
-				    logger.debug("Getting HVAC State: HTTPException")
-				  except httplib.ImproperConnectionState:
-				    logger.debug("Getting HVAC State: ImproperConnectionState")
-				  except Exception:
-				    logger.debug("Getting HVAC State: General exception")
+				    payload = {'key' : REMOTE_RELAY_KEY, 'ts' : int(round(time.time() * 1000))}
+				    r = requests.get("HTTP://%s/all=state" % (REMOTE_RELAY_URL), timeout=10, params=payload, stream=True)
+				    state = r.text
 				    
-				  if state != None and state != "":
+				    logger.debug("Get State Status Code %s " % (r.status_code))
+				    logger.debug("Get State text %s " % (r.text))
+				    
+				  except requests.exceptions.ConnectionError as e:
+				    logger.error("Getting relay state: ConnectionError. %s" % e)
+				  except requests.exceptions.HTTPError as e:
+				    logger.error("Getting relay state: HTTPError. %s" % e)
+				  except requests.exceptions.URLRequired as e:
+				    logger.error("Getting relay state: URLRequired. %s" % e)
+				  except requests.exceptions.TooManyRedirects as e:
+				    logger.error("Getting relay state: TooManyRedirects. %s" % e)
+				  except requests.exceptions.ConnectTimeout as e:
+				    logger.error("Getting relay state: ConnectTimeout. %s" % e)
+				  except requests.exceptions.ReadTimeout as e:
+				    logger.error("Getting relay state: ReadTimeout. %s" % e)
+				  except requests.exceptions.Timeout as e:
+				    logger.error("Getting relay state: Timeout. %s" % e)
+				  except requests.exceptions.RequestException as e:
+				    logger.error("Getting relay state: RequestException. %s" % e)
+				  
+				    
+				  if r != None and r.status_code == requests.codes.ok and state != None and state != "":
+				    self.updateControllerStatus()
+				    state = state.strip();
+				    state = state.rstrip();
 				    states = state.split(',')
 				    logger.debug(states)
 				  else:
@@ -335,7 +465,7 @@ class thermDaemon():
         while test == None and retry > 0:
             logger.info('Connecting to database at %s'%(datetime.datetime.now().strftime('%m-%d-%y-%X')))
             try:
-              test = mdb.connect(CONN_PARAMS[0], CONN_PARAMS[1], CONN_PARAMS[2], CONN_PARAMS[3], port=CONN_PARAMS[4])
+              test = self.db.getConnection()
             except Exception:
               logger.info('Failed at %s \n'%(datetime.datetime.now().strftime('%m-%d-%y-%X')))
             else:
@@ -363,6 +493,16 @@ class thermDaemon():
                 hvacState = self.getHVACState()
 
                 setTime, moduleID, targetTemp, targetMode, expiryTime = self.getDBTargets()
+                
+                #Check when the last reading was from the target module. If it's been too long, switch 
+                #to the default local module
+                lastReading = self.getLastReading(moduleID)
+                now = datetime.datetime.now()
+                diff = now - lastReading
+                if (diff.seconds > 600):  # more than 600 seconds (10 minutes) has passed since last reading so default back to the local sensor
+                  logger.debug("No reading from module %d. Changing to default module" % (moduleID))
+                  moduleID = 1
+                  self.setDefaultModule(moduleID)
                 
                 moduleID = int(moduleID)
                 targetTemp = int(targetTemp)

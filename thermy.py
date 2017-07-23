@@ -202,46 +202,67 @@ class thermDaemon():
           cursor = self.db.getCursor(conDB)
           
           if (cursor != None):
-            cursor.execute("""INSERT ThermostatLog SET mode='%s', moduleID=%s, targetTemp=%s, actualTemp=%s,
-                            coolOn=%s, heatOn=%s, fanOn=%s, auxOn=%s""" % 
-                            (str(mode), str(moduleID), str(targetTemp), str(actualTemp),
-                            str(hvacState.cool), str(hvacState.heat), str(hvacState.fan), str(hvacState.aux)))
+            try:
+              cursor.execute("""INSERT ThermostatLog SET mode='%s', moduleID=%s, targetTemp=%s, actualTemp=%s,
+                              coolOn=%s, heatOn=%s, fanOn=%s, auxOn=%s""" % 
+                              (str(mode), str(moduleID), str(targetTemp), str(actualTemp),
+                              str(hvacState.cool), str(hvacState.heat), str(hvacState.fan), str(hvacState.aux)))
 
-            cursor.close()
+              cursor.close()
+            except Exception as err:
+              logger.error("logStatus. Unable to log to database: %s" % (err))
             conDB.commit()
           conDB.close()
         
     def getTempList(self):
+        logger.debug("start temp list")
+        result = []
+        sensors = None
+        readings = None
         conDB = self.db.getConnection()
         if (conDB != None):
           cursor = self.db.getCursor(conDB)
           if (cursor != None):
-            cursor.execute("SELECT MAX(moduleID) FROM ModuleInfo")
-            totSensors = int(cursor.fetchall()[0][0])
-
-            allModTemps = []
-            for modID in range(totSensors):
-                try:
-                    queryStr = ("SELECT readingID, timeStamp, moduleID, location, temperature, humidity, light, occupied FROM SensorData WHERE moduleID=%s ORDER BY readingID DESC LIMIT 1" % str(modID + 1))
-                    cursor.execute(queryStr)
-                    allModTemps.append(float(cursor.fetchall()[0][4]))
-                except:
-                    logger.debug("Error reading temperature database")
-                    pass
-
+            try:
+              cursor.execute("SELECT moduleID, strDescription, firmwareVer, tempSense, humiditySense, lightSense, motionSense FROM ModuleInfo WHERE moduleID != 0 ORDER BY moduleID") # Get all modules except the outdoor weather
+              sensors = cursor.fetchall()
+            except Exception as sensorErr:
+              logger.error("getTempList. Unable to get sensors. %s" % (sensorErr))
             cursor.close()
+          else:
+            logger.error("getTempList. Unable to get sensor cursor.")
+          
+          if sensors != None:
+            cursor = self.db.getCursor(conDB)
+            if (cursor != None):
+              for sensor in sensors:
+                try:
+                  cursor.execute("SELECT readingID, timeStamp, location, temperature, humidity, light, occupied FROM SensorData WHERE moduleID=%s ORDER BY timeStamp DESC LIMIT 1" % sensor[0])
+                  readings = cursor.fetchall()
+                
+                  result.append([sensor[0], readings[0][1], readings[0][2], readings[0][3], readings[0][4]])
+                  
+                except Exception as readingsErr:
+                  logger.error("getTempList. Unable to get readings. %s" % (readingsErr))
+              cursor.close()
+          else:
+            logger.error("getTempList. Unable to get sensor cursor")
           conDB.close()
-
-        return allModTemps
+          
+          logger.debug("complete temp list")
+        return result
         
     def getLastReading(self, moduleID):
         conDB = self.db.getConnection()
         if (conDB != None):
           cursor = self.db.getCursor(conDB)
           if (cursor != None):
-            cursor.execute("SELECT MAX(timeStamp) FROM SensorData WHERE moduleID=%s" % (moduleID))
-            stamps = cursor.fetchall()
-        
+            try:
+              cursor.execute("SELECT MAX(timeStamp) FROM SensorData WHERE moduleID=%s" % (moduleID))
+              stamps = cursor.fetchall()
+            except Exception as err:
+              logger.error("getLastReading. Unable to get last reading: %s" % (err))  
+
             cursor.close()
           conDB.close()
 
@@ -252,8 +273,12 @@ class thermDaemon():
         if (conDB != None):
           cursor = self.db.getCursor(conDB)
           if (cursor != None):
-            cursor.execute("UPDATE ThermostatSet SET moduleID=%d" % (moduleID))
-            conDB.commit()
+            try:
+              cursor.execute("UPDATE ThermostatSet SET moduleID=%d" % (moduleID))
+              conDB.commit()
+            except Exception as err:
+              logger.error("setDefaultMode. Unable to update database: %s" % (err))
+            cursor.close()
           conDB.close()
         return
 
@@ -295,9 +320,13 @@ class thermDaemon():
         if (conDB != None):
           cursor = self.db.getCursor(conDB)
           if (cursor != None):
-            cursor.execute("INSERT INTO ControllerStatus (id,lastStatus) values (1,NOW()) ON DUPLICATE KEY UPDATE lastStatus = NOW()")
-            cursor.close()
-            conDB.commit()
+            try:
+              cursor.execute("INSERT INTO ControllerStatus (lastStatus) values (NOW())")
+              cursor.close()
+              conDB.commit()
+            except Exception as err:
+              logger.error("updateControllerStatus. Unable to update database: %s" % (err))
+
           conDB.close()
 		    
     def getHVACState(self):
@@ -363,89 +392,93 @@ class thermDaemon():
     def idle(self):
         self.setHVAC(OFF, OFF, OFF, OFF)        
 
-    def heatMode(self, moduleID, tempList, hvacState, targetTemp):
+    def heatMode(self, currentTemp, hvacState, targetTemp):
         logger.debug('Heat mode')
-        if hvacState.fan==OFF and hvacState.heat==OFF and hvacState.cool==OFF and hvacState.aux==OFF: # system is idle/off
-            logger.debug('system is off')
-            if tempList[moduleID-1] < targetTemp - INACTIVE_HYSTERESIS: #temp < target = turn on heat
-                logger.debug('turning on heat')
-                self.heat()
-        elif hvacState.fan==ON and hvacState.heat==ON: #system is heating
-            logger.debug('system is heating')
-            if tempList[moduleID-1] > targetTemp + ACTIVE_HYSTERESIS: #temp has been satisfied
-                logger.debug('turning off heat. going to fan mode')
-                #go to fan-only mode
-                self.fanOnly()
-                sleep(30)
-                #go to idle mode
-                logger.debug('finishing turning the heat off. turning fan off.')
-        elif hvacState.fan==ON and hvacState.cool==ON: #system is cooling
-            logger.debug('system is cooling')
-            if tempList[moduleID-1] < targetTemp - ACTIVE_HYSTERESIS: #temp is low so change from cooling to heat
-                #go to idle mode
-                self.idle()
-                logger.debug('switching from cool to heat. turning off for a short time')
-                sleep(30)
-                #turn heat on
-                logger.debug('finishing switch from cool to heat. turning on heat')
-                self.heat()
-            else:
-                #go to idle mode
-                logger.debug('temp is satisfied. turning system off')
-                self.idle()
-        elif hvacState.fan==ON and hvacState.cool==OFF and hvacState.heat==OFF: #fan-only mode
-            logger.debug('fan only mode')
-            if tempList[moduleID-1] < targetTemp - INACTIVE_HYSTERESIS: #temp is low so turn heat on
-                logger.debug('turning heat on')
-                self.heat()
-            else:
-                logger.debug('turning fan off')
-                self.idle()
-        elif hvacState.fan==OFF and (hvacState.cool==ON or hvacState.heat==ON): #no fan but heating or cooling - error
-            logger.debug('fan not running when it should')
-            #turn off
-            self.idle()
         
-    def coolMode(self, moduleID, tempList, hvacState, targetTemp):
+        if currentTemp != None:
+          if hvacState.fan==OFF and hvacState.heat==OFF and hvacState.cool==OFF and hvacState.aux==OFF: # system is idle/off
+              logger.debug('system is off')
+              if currentTemp < targetTemp - INACTIVE_HYSTERESIS: #temp < target = turn on heat
+                  logger.debug('turning on heat')
+                  self.heat()
+          elif hvacState.fan==ON and hvacState.heat==ON: #system is heating
+              logger.debug('system is heating')
+              if currentTemp > targetTemp + ACTIVE_HYSTERESIS: #temp has been satisfied
+                  logger.debug('turning off heat. going to fan mode')
+                  #go to fan-only mode
+                  self.fanOnly()
+                  sleep(30)
+                  #go to idle mode
+                  logger.debug('finishing turning the heat off. turning fan off.')
+          elif hvacState.fan==ON and hvacState.cool==ON: #system is cooling
+              logger.debug('system is cooling')
+              if currentTemp < targetTemp - ACTIVE_HYSTERESIS: #temp is low so change from cooling to heat
+                  #go to idle mode
+                  self.idle()
+                  logger.debug('switching from cool to heat. turning off for a short time')
+                  sleep(30)
+                  #turn heat on
+                  logger.debug('finishing switch from cool to heat. turning on heat')
+                  self.heat()
+              else:
+                  #go to idle mode
+                  logger.debug('temp is satisfied. turning system off')
+                  self.idle()
+          elif hvacState.fan==ON and hvacState.cool==OFF and hvacState.heat==OFF: #fan-only mode
+              logger.debug('fan only mode')
+              if currentTemp < targetTemp - INACTIVE_HYSTERESIS: #temp is low so turn heat on
+                  logger.debug('turning heat on')
+                  self.heat()
+              else:
+                  logger.debug('turning fan off')
+                  self.idle()
+          elif hvacState.fan==OFF and (hvacState.cool==ON or hvacState.heat==ON): #no fan but heating or cooling - error
+              logger.debug('fan not running when it should')
+              #turn off
+              self.idle()
+        
+    def coolMode(self, currentTemp, hvacState, targetTemp):
         logger.debug('Cool mode')
-        if hvacState.fan==OFF and hvacState.heat==OFF and  hvacState.cool==OFF and hvacState.aux==OFF: # system is idle/off
-            logger.debug('system is off')
-            if tempList[moduleID-1] > targetTemp + INACTIVE_HYSTERESIS: #temp > target = turn on a/c
-                logger.debug('turning on a/c')
-                self.cool()
-        elif hvacState.fan==ON and hvacState.heat==ON: #system is heating
-            logger.debug('system is heating')
-            if tempList[moduleID-1] > targetTemp + ACTIVE_HYSTERESIS: #temp > target = turn on a/c
-                logger.debug('finishing turning the heat off. turning cool on')
-                #go to cool mode
-                self.cool()
-        elif hvacState.fan==ON and hvacState.cool==ON: #system is cooling
-            logger.debug('system is cooling')
-            if tempList[moduleID-1] < targetTemp - ACTIVE_HYSTERESIS: #temp is satisfied so turn off a/c
-                logger.debug('turning off cool. running fan-only first.')
-                self.fanOnly()
-                sleep(30)
-                #go to idle mode
-                logger.debug('finishing. turning off fan')
-                self.idle()
-        elif hvacState.fan==ON and hvacState.cool==OFF and hvacState.heat==OFF: #fan-only mode
-            logger.debug('fan only mode')
-            if tempList[moduleID-1] > targetTemp + INACTIVE_HYSTERESIS: #temp is high so turn a/c
-                logger.debug('turning cool on')
-                self.cool()
-            else:
-                logger.debug('turning fan off')
-                self.idle()
-        elif hvacState.fan==OFF and (hvacState.cool==ON or hvacState.heat==ON): #no fan but heating or cooling - error
-            logger.debug('fan not running when it should')
-            #turn off
-            self.idle()
         
-    def idleMode(self, moduleID, tempList, hvacState, targetTemp):
+        if currentTemp != None:
+          if hvacState.fan==OFF and hvacState.heat==OFF and  hvacState.cool==OFF and hvacState.aux==OFF: # system is idle/off
+              logger.debug('system is off')
+              if currentTemp > targetTemp + INACTIVE_HYSTERESIS: #temp > target = turn on a/c
+                  logger.debug('turning on a/c')
+                  self.cool()
+          elif hvacState.fan==ON and hvacState.heat==ON: #system is heating
+              logger.debug('system is heating')
+              if currentTemp > targetTemp + ACTIVE_HYSTERESIS: #temp > target = turn on a/c
+                  logger.debug('finishing turning the heat off. turning cool on')
+                  #go to cool mode
+                  self.cool()
+          elif hvacState.fan==ON and hvacState.cool==ON: #system is cooling
+              logger.debug('system is cooling')
+              if currentTemp < targetTemp - ACTIVE_HYSTERESIS: #temp is satisfied so turn off a/c
+                  logger.debug('turning off cool. running fan-only first.')
+                  self.fanOnly()
+                  sleep(30)
+                  #go to idle mode
+                  logger.debug('finishing. turning off fan')
+                  self.idle()
+          elif hvacState.fan==ON and hvacState.cool==OFF and hvacState.heat==OFF: #fan-only mode
+              logger.debug('fan only mode')
+              if currentTemp > targetTemp + INACTIVE_HYSTERESIS: #temp is high so turn a/c
+                  logger.debug('turning cool on')
+                  self.cool()
+              else:
+                  logger.debug('turning fan off')
+                  self.idle()
+          elif hvacState.fan==OFF and (hvacState.cool==ON or hvacState.heat==ON): #no fan but heating or cooling - error
+              logger.debug('fan not running when it should')
+              #turn off
+              self.idle()
+          
+    def idleMode(self):
         logger.debug('Idle mode. turning off')
         self.idle()
 
-    def fanMode(self, moduleID, tempList, hvacState, targetTemp):
+    def fanMode(self):
         logger.debug('Fan mode')
         self.fanOnly()
         
@@ -518,19 +551,34 @@ class thermDaemon():
                 logger.debug('Actual Mode:' + activeMode)
                 logger.debug('Temp from DB:'+str(tempList))
                 logger.debug('Target Temp:'+str(targetTemp))
-
+                logger.debug('moduleID:'+str(moduleID))
                 logger.debug('Target Mode: %s' % targetMode)
+                
+                #identify the readings for the sensor that we're using to control from
+                sensorReading = None
+                for temp in tempList:
+                  if (temp[0] == moduleID):
+                    sensorReading = temp
+                    break
+                
+                if (sensorReading == None):  # default to the local sensor
+                  for temp in tempList:
+                    if (temp[0] == 1):
+                      sensorReading = temp
+                      break
+                
+                logger.debug('Current Temp:'+str(sensorReading[3]))
                 if targetMode == 'Heat':
-                    self.heatMode(moduleID, tempList, hvacState, targetTemp)
+                    self.heatMode(sensorReading[3] if sensorReading != None else None, hvacState, targetTemp)
                     activeMode = 'Heat'
                 elif targetMode == 'Cool':
-                    self.coolMode(moduleID, tempList, hvacState, targetTemp)
+                    self.coolMode(sensorReading[3] if sensorReading != None else None, hvacState, targetTemp)
                     activeMode = 'Cool'
                 elif targetMode == 'Fan':
-                    self.fanMode(moduleID, tempList, hvacState, targetTemp)
+                    self.fanMode()
                     activeMode = 'Fan'
                 elif targetMode == 'Off':
-                    self.idleMode(moduleID, tempList, hvacState, targetTemp)
+                    self.idleMode()
                     activeMode = 'Off'
                 else:
                     logger.info('Invalid Target Mode %s' % targetMode)

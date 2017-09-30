@@ -42,7 +42,7 @@ CREATE TABLE `ManualProgram` (
 --
 
 CREATE TABLE `ModuleInfo` (
-`moduleID` int(11) unsigned NOT NULL,
+`moduleID` int(11) unsigned,
   `strDescription` varchar(45) DEFAULT NULL,
   `firmwareVer` char(11) DEFAULT NULL,
   `tempSense` tinyint(1) NOT NULL DEFAULT '0',
@@ -57,9 +57,16 @@ CREATE TABLE `ModuleInfo` (
 -- Table structure for table `OperationModes`
 --
 
-CREATE TABLE `OperationModes` (
-  `mode` varchar(45) NOT NULL DEFAULT ''
+CREATE TABLE IF NOT EXISTS `OperationModes` (
+  `mode` varchar(45) NOT NULL DEFAULT '',
+  `displayorder` tinyint(4) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+INSERT INTO `OperationModes` (`mode`, `displayorder`) VALUES
+('Off', 0),
+('Heat', 1),
+('Cool', 2),
+('Fan', 3);
 
 -- --------------------------------------------------------
 
@@ -156,7 +163,7 @@ ALTER TABLE `ModuleInfo`
 -- Indexes for table `OperationModes`
 --
 ALTER TABLE `OperationModes`
- ADD PRIMARY KEY (`mode`);
+ ADD PRIMARY KEY (`mode`), ADD KEY `displayorder` (`displayorder`);
 
 --
 -- Indexes for table `ProgramTypes`
@@ -252,3 +259,14 @@ ADD CONSTRAINT `ThermostatSet_ibfk_1` FOREIGN KEY (`moduleID`) REFERENCES `Modul
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 
+
+CREATE TABLE IF NOT EXISTS `ControllerStatus` (
+`id` int(11) NOT NULL,
+  `lastStatus` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=latin1;
+
+ALTER TABLE `ControllerStatus`
+ ADD UNIQUE KEY `id` (`id`);
+
+ALTER TABLE `ControllerStatus`
+MODIFY `id` int(11) NOT NULL AUTO_INCREMENT,AUTO_INCREMENT=3;
